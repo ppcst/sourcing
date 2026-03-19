@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+data/browser_profile/
+data/screenshots/
+data/*.log
+output/reports/
+*.xlsx
+*.egg-info/
+.venv/
+venv/
