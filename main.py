@@ -82,6 +82,15 @@ def build_parser() -> argparse.ArgumentParser:
              "Cookies are saved in the persistent browser profile."
     )
     login_p.add_argument("--log-level", default="INFO")
+    login_p.add_argument(
+        "--import-cookies", type=Path, default=None, metavar="COOKIES_JSON",
+        help="Import cookies from a JSON file exported by a browser extension "
+             "(e.g. EditThisCookie) instead of opening the browser."
+    )
+    login_p.add_argument(
+        "--timeout", type=int, default=300,
+        help="Seconds to keep the browser open (default: 300)"
+    )
 
     # ── demo ──────────────────────────────────────────────────────────
     demo_p = sub.add_parser("demo", help="Run a quick demo with sample data (no browser needed)")
@@ -111,20 +120,73 @@ async def cmd_run(args: argparse.Namespace) -> None:
     print(f"\nReport saved to: {output}")
 
 
-async def cmd_login(_args: argparse.Namespace) -> None:
+async def cmd_login(args: argparse.Namespace) -> None:
     """Open a persistent browser session for the user to log in to 1688."""
+    import json
+    import os
+    import shutil
     from scraper.browser import BrowserManager
 
-    print("Opening browser… Please log in to 1688.com and then press Ctrl+C to save your session.")
+    # ── Option A: import cookies from a JSON file ─────────────────────
+    if getattr(args, "import_cookies", None):
+        cookie_path: Path = args.import_cookies
+        if not cookie_path.exists():
+            print(f"[ERROR] Cookie file not found: {cookie_path}")
+            sys.exit(1)
+        cookies = json.loads(cookie_path.read_text(encoding="utf-8"))
+        print(f"Importing {len(cookies)} cookies into the browser profile…")
+        async with BrowserManager(headless=True) as bm:
+            page = await bm.new_page()
+            await bm.goto(page, "https://www.1688.com")
+            await bm._context.add_cookies(cookies)
+            await page.reload()
+            await asyncio.sleep(2)
+            # Verify login
+            title = await page.title()
+            print(f"Page title after import: {title}")
+        print("Cookies imported. Run `python main.py run …` to start sourcing.")
+        return
+
+    # ── Option B: headed browser (requires a display / xvfb-run) ──────
+    has_display = bool(os.environ.get("DISPLAY"))
+    has_xvfb = bool(shutil.which("xvfb-run"))
+
+    if not has_display:
+        if has_xvfb:
+            # Re-launch ourselves under xvfb-run so the browser gets a virtual display
+            import subprocess
+            print("No $DISPLAY found. Relaunching under xvfb-run (virtual display)…")
+            cmd = ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1366x768x24",
+                   sys.executable] + sys.argv
+            result = subprocess.run(cmd, env={**os.environ, "DISPLAY": ":99"})
+            sys.exit(result.returncode)
+        else:
+            print(
+                "\n[ERROR] No display server found ($DISPLAY is empty) and xvfb-run is not installed.\n"
+                "\nOptions:\n"
+                "  1. Install xvfb:  sudo apt-get install -y xvfb\n"
+                "     Then re-run:   xvfb-run python main.py login\n\n"
+                "  2. Export cookies from your local browser using the\n"
+                "     'EditThisCookie' or 'Cookie-Editor' extension on 1688.com,\n"
+                "     save them as cookies.json, then run:\n"
+                "     python main.py login --import-cookies cookies.json\n\n"
+                "  3. Run on your local machine (Mac/Windows) where a display is available.\n"
+            )
+            sys.exit(1)
+
+    timeout = getattr(args, "timeout", 300)
+    print(f"Opening browser… Please log in to 1688.com (you have {timeout}s).")
+    print("Press Ctrl+C when you are done to save the session.\n")
     async with BrowserManager(headless=False) as bm:
         page = await bm.new_page()
         await bm.goto(page, "https://login.1688.com/member/signin.htm")
-        print("Waiting for you to log in. Press Ctrl+C when done.")
+        print("Browser open. Log in now…")
         try:
-            await asyncio.sleep(300)  # 5 minutes
-        except asyncio.CancelledError:
+            await asyncio.sleep(timeout)
+        except (asyncio.CancelledError, KeyboardInterrupt):
             pass
-    print("Session saved. You can now run the sourcing pipeline.")
+    print("\nSession saved to:", config.DATA_DIR / "browser_profile")
+    print("You can now run the sourcing pipeline.")
 
 
 async def cmd_demo(args: argparse.Namespace) -> None:
