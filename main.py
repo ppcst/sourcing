@@ -133,18 +133,52 @@ async def cmd_login(args: argparse.Namespace) -> None:
         if not cookie_path.exists():
             print(f"[ERROR] Cookie file not found: {cookie_path}")
             sys.exit(1)
-        cookies = json.loads(cookie_path.read_text(encoding="utf-8"))
+        raw = json.loads(cookie_path.read_text(encoding="utf-8"))
+        # Normalize EditThisCookie / Cookie-Editor format → Playwright format
+        sameSite_map = {
+            "no_restriction": "None",
+            "unspecified": "None",
+            "lax": "Lax",
+            "strict": "Strict",
+            "none": "None",
+        }
+        cookies = []
+        for c in raw:
+            pw = {
+                "name": c["name"],
+                "value": c["value"],
+                "domain": c["domain"],
+                "path": c.get("path", "/"),
+                "secure": c.get("secure", False),
+                "httpOnly": c.get("httpOnly", False),
+                "sameSite": sameSite_map.get(
+                    str(c.get("sameSite", "None")).lower(), "None"
+                ),
+            }
+            # Only set expires for persistent cookies (skip session cookies)
+            exp = c.get("expirationDate")
+            if exp and not c.get("session", False):
+                pw["expires"] = int(exp)
+            cookies.append(pw)
+
         print(f"Importing {len(cookies)} cookies into the browser profile…")
         async with BrowserManager(headless=True) as bm:
             page = await bm.new_page()
             await bm.goto(page, "https://www.1688.com")
             await bm._context.add_cookies(cookies)
             await page.reload()
-            await asyncio.sleep(2)
-            # Verify login
-            title = await page.title()
-            print(f"Page title after import: {title}")
-        print("Cookies imported. Run `python main.py run …` to start sourcing.")
+            await asyncio.sleep(3)
+            # Verify login by checking for username in page
+            html = await page.content()
+            nick = next((c["value"] for c in cookies if c["name"] == "_nk_"), "")
+            logged_in = nick and nick in html
+            if logged_in:
+                print(f"✓ Logged in as: {nick}")
+            else:
+                title = await page.title()
+                print(f"Page title: {title}")
+                print("⚠ Could not confirm login — cookies may be expired.")
+        print("Session saved. Run `python main.py run …` to start sourcing.")
         return
 
     # ── Option B: headed browser (requires a display / xvfb-run) ──────
