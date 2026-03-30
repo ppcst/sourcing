@@ -1,9 +1,12 @@
 """Playwright browser lifecycle manager with anti-detection measures."""
 from __future__ import annotations
 import asyncio
+import os
 import random
+import re
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from playwright.async_api import (
     async_playwright,
@@ -15,6 +18,25 @@ from playwright.async_api import (
 from loguru import logger
 
 import config
+
+
+def _parse_proxy_env() -> Optional[dict]:
+    """
+    Read HTTP_PROXY / HTTPS_PROXY from the environment and return a dict
+    suitable for Playwright's `proxy=` argument:
+      {"server": "http://host:port", "username": "...", "password": "..."}
+    Returns None if no proxy is configured.
+    """
+    raw = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    proxy: dict = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
+    if parsed.username:
+        proxy["username"] = parsed.username
+    if parsed.password:
+        proxy["password"] = parsed.password
+    return proxy
 
 
 class BrowserManager:
@@ -57,20 +79,29 @@ class BrowserManager:
     # ------------------------------------------------------------------
     async def start(self) -> None:
         self._playwright = await async_playwright().start()
+        proxy = _parse_proxy_env()
+        if proxy:
+            logger.debug("Using proxy: {}", proxy["server"])
         # Use a persistent context so 1688 login cookies are retained
-        self._context = await self._playwright.chromium.launch_persistent_context(
+        launch_kwargs: dict = dict(
             user_data_dir=str(self.user_data_dir),
             headless=self.headless,
             slow_mo=self.slow_mo,
             viewport={"width": 1366, "height": 768},
             locale="zh-CN",
             timezone_id="Asia/Shanghai",
+            ignore_https_errors=bool(proxy),   # proxy does TLS inspection; trust it
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
             ],
             ignore_default_args=["--enable-automation"],
+        )
+        if proxy:
+            launch_kwargs["proxy"] = proxy
+        self._context = await self._playwright.chromium.launch_persistent_context(
+            **launch_kwargs
         )
         # Patch navigator.webdriver to evade bot detection
         await self._context.add_init_script(

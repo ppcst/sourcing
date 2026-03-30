@@ -156,9 +156,11 @@ async def cmd_login(args: argparse.Namespace) -> None:
             # Re-launch ourselves under xvfb-run so the browser gets a virtual display
             import subprocess
             print("No $DISPLAY found. Relaunching under xvfb-run (virtual display)…")
+            # Strip DISPLAY from env so xvfb-run sets it correctly for its child
+            clean_env = {k: v for k, v in os.environ.items() if k != "DISPLAY"}
             cmd = ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1366x768x24",
                    sys.executable] + sys.argv
-            result = subprocess.run(cmd, env={**os.environ, "DISPLAY": ":99"})
+            result = subprocess.run(cmd, env=clean_env)
             sys.exit(result.returncode)
         else:
             print(
